@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lamp Architect v4.1 (ESM)</title>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        slate: { 850: '#151e2e', 900: '#0f172a', 950: '#020617' },
+                        orange: { 450: '#fb923c' }
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- Google Fonts -->
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;900&family=JetBrains+Mono:wght@400;700&display=swap"
+        rel="stylesheet">
+
+    <style>
+        body,
+        html {
+            margin: 0;
+            padding: 0;
+            background-color: #020617;
+            color: white;
+            height: 100%;
+            overflow: hidden;
+        }
+
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #0f172a;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #334155;
+            border-radius: 3px;
+        }
+
+        .glass-panel {
+            background: rgba(15, 23, 42, 0.7);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        #error-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.9);
+            color: #ef4444;
+            z-index: 9999;
+            padding: 40px;
+            font-family: monospace;
+            white-space: pre-wrap;
+        }
+    </style>
+
+    <!-- Import Map for reliable Module loading -->
+    <script type="importmap">
+        {
+            "imports": {
+                "react": "https://esm.sh/react@18.2.0",
+                "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+                "three": "https://esm.sh/three@0.160.0",
+                "@react-three/fiber": "https://esm.sh/@react-three/fiber@8.15.14?external=react,react-dom,three",
+                "@react-three/drei": "https://esm.sh/@react-three/drei@9.99.0?external=react,react-dom,three,@react-three/fiber",
+                "lucide-react": "https://esm.sh/lucide-react@0.300.0?external=react"
+            }
+        }
+    </script>
+    <!-- Babel for in-browser JSX compilation -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+
+<body>
+    <div id="root"></div>
+    <div id="error-overlay"></div>
+
+    <script>
+        // Global Error Handler to see why it broke
+        window.onerror = function (msg, url, line, col, error) {
+            const el = document.getElementById('error-overlay');
+            el.style.display = 'block';
+            el.innerHTML = `<h1>CRITICAL ERROR</h1>\n${msg}\n\nLine: ${line}:${col}\nURL: ${url}\n\n${error?.stack || ''}`;
+            console.error(error);
+        };
+    </script>
+
+    <script type="text/babel" data-type="module">
+        import React, { useState, useMemo, useRef, useEffect, Suspense } from 'react';
+        import { createRoot } from 'react-dom/client';
+        import * as THREE from 'three';
+        import { Canvas, useFrame } from '@react-three/fiber';
+        import { OrbitControls, PerspectiveCamera, Environment, ContactShadows, Float, Stars } from '@react-three/drei';
+        import { Activity, Layers, Download, Maximize2, Rotate3d, CheckCircle2, AlertTriangle } from 'lucide-react';
+
+        // --- ICONS WRAPPER (Mapped manually just in case lucide import behaves oddly, but importmap should handle it) ---
+        // We will use the imported ones directly.
+
+        // --- MOTOR DE CÁLCULO ESTRUCTURAL ---
+        const MATERIALS = {
+            paper_cord: {
+                name: "Hilo de Papel Kraft",
+                density: 750,
+                tensileStrength: 15,
+                costPerMeter: 0.15
+            }
+        };
+
+        const SolverEngine = (params) => {
+            const { height, rTop, rBase, curvature, turns, diameter } = params;
+            const mat = MATERIALS.paper_cord;
+
+            let totalLength = 0;
+            const steps = 600;
+            const points = [];
+
+            for (let i = 0; i <= steps; i++) {
+                const t = i / steps;
+                const y = t * height;
+                const currentR = rBase + (rTop - rBase) * Math.pow(t, curvature);
+                const angle = t * turns * Math.PI * 2;
+
+                const point = new THREE.Vector3(
+                    currentR * Math.cos(angle),
+                    y,
+                    currentR * Math.sin(angle)
+                );
+                points.push(point);
+
+                if (i > 0) totalLength += points[i - 1].distanceTo(point);
+            }
+
+            const radiusM = diameter / 2 / 1000;
+            const sectionArea = Math.PI * Math.pow(radiusM, 2);
+            const mass = totalLength * sectionArea * mat.density;
+            const force = mass * 9.81;
+            const stressMPa = force / sectionArea / 1000000;
+            const safetyFactor = stressMPa > 0 ? mat.tensileStrength / stressMPa : 999;
+
+            // Geometry construction optimization
+            const geometry = new THREE.BufferGeometry().setFromPoints(points);
+
+            return { totalLength, mass, stressMPa, safetyFactor, points, geometry };
+        };
+
+        // --- COMPONENTES 3D ---
+
+        const LampModel = ({ calculation, color }) => {
+            if (!calculation.points || calculation.points.length === 0) return null;
+
+            const yOffset = calculation.points[calculation.points.length - 1].y / 2;
+
+            return (
+                <group position={[0, -yOffset, 0]}>
+                    <primitive object={new THREE.Line(calculation.geometry, new THREE.LineBasicMaterial({ color: color, linewidth: 2 }))} />
+
+                    {/* Ghost effect */}
+                    <primitive
+                        object={new THREE.Line(
+                            calculation.geometry,
+                            new THREE.LineBasicMaterial({ color: color, transparent: true, opacity: 0.1, linewidth: 4 })
+                        )}
+                        position={[0.1, 0, 0.1]}
+                    />
+                </group>
+            );
+        };
+
+        const Scene = ({ calculation, params }) => {
+            return (
+                <>
+                    <PerspectiveCamera makeDefault position={[1.4, 1.0, 1.4]} fov={45} />
+                    <OrbitControls
+                        autoRotate={params.autoRotate}
+                        autoRotateSpeed={1.0}
+                        enableDamping
+                        dampingFactor={0.05}
+                    />
+
+                    <ambientLight intensity={0.5} />
+                    <pointLight position={[10, 10, 10]} intensity={1} color="#ffedd5" />
+                    <spotLight position={[-5, 8, -5]} angle={0.4} penumbra={1} intensity={2} castShadow />
+
+                    <Stars radius={100} depth={50} count={2000} factor={4} saturation={0} fade speed={1} />
+
+                    <Float speed={2} rotationIntensity={0.1} floatIntensity={0.1}>
+                        <LampModel calculation={calculation} color="#fb923c" />
+                    </Float>
+
+                    <ContactShadows opacity={0.5} scale={10} blur={2.5} far={10} resolution={256} color="#000000" />
+                </>
+            );
+        };
+
+        // --- UI ---
+
+        const SliderControl = ({ label, value, name, min, max, step, onChange, unit = "" }) => (
+            <div className="flex flex-col gap-2 mb-4 group">
+                <div className="flex justify-between items-end">
+                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest group-hover:text-orange-400 transition-colors">{label}</label>
+                    <span className="text-xs font-mono font-bold text-white bg-slate-800 px-2 py-0.5 rounded border border-slate-700">{value} <span className="text-slate-500 text-[9px]">{unit}</span></span>
+                </div>
+                <input
+                    type="range" name={name} min={min} max={max} step={step} value={value} onChange={onChange}
+                    className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-orange-500 hover:accent-orange-400 focus:outline-none"
+                />
+            </div>
+        );
+
+        // --- APP ---
+
+        function App() {
+            const [params, setParams] = useState({
+                height: 0.85,    // Metros internamente ahora para simplificar escala 3D
+                rBase: 0.30,
+                rTop: 0.08,
+                curvature: 1.2,
+                turns: 45,
+                diameter: 4,     // mm
+                autoRotate: true
+            });
+
+            // Recalcular
+            const results = useMemo(() => SolverEngine({
+                height: params.height,
+                rTop: params.rTop,
+                rBase: params.rBase,
+                curvature: params.curvature,
+                turns: params.turns,
+                diameter: params.diameter
+            }), [params]);
+
+            const handleChange = (e) => {
+                const { name, value, type, checked } = e.target;
+                setParams(p => ({
+                    ...p,
+                    [name]: type === 'checkbox' ? checked : parseFloat(value)
+                }));
+            };
+
+            const downloadReport = () => {
+                alert("Generando reporte... (Simulación)");
+            };
+
+            return (
+                <div className="flex flex-col md:flex-row h-screen w-full bg-[#020617] text-slate-200 font-sans overflow-hidden">
+
+                    {/* Sidebar Controls */}
+                    <div className="w-full md:w-[320px] glass-panel border-r border-slate-800 flex flex-col z-20 shadow-2xl relative order-2 md:order-1">
+                        <div className="p-5 border-b border-slate-800/50 bg-[#020617]/50 flex items-center gap-3">
+                            <Layers size={20} className="text-orange-500" />
+                            <h1 className="text-lg font-black italic uppercase text-white tracking-tighter">Lamp Architect <span className="text-[10px] not-italic font-sans font-normal text-slate-500 ml-1">v4.1</span></h1>
+                        </div>
+
+                        <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
+                            <h2 className="text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-4 flex items-center gap-2"><Maximize2 size={12} /> Geometría (Metros)</h2>
+                            <SliderControl label="Altura" value={params.height} name="height" min={0.2} max={2.0} step={0.01} onChange={handleChange} unit="m" />
+                            <SliderControl label="Radio Base" value={params.rBase} name="rBase" min={0.05} max={1.0} step={0.01} onChange={handleChange} unit="m" />
+                            <SliderControl label="Radio Sup." value={params.rTop} name="rTop" min={0.02} max={0.6} step={0.01} onChange={handleChange} unit="m" />
+
+                            <div className="h-4"></div>
+
+                            <h2 className="text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-4 flex items-center gap-2"><Rotate3d size={12} /> Trama</h2>
+                            <SliderControl label="Curvatura" value={params.curvature} name="curvature" min={0.1} max={3.0} step={0.1} onChange={handleChange} />
+                            <SliderControl label="Vueltas" value={params.turns} name="turns" min={5} max={150} step={1} onChange={handleChange} />
+                            <SliderControl label="Calibre Hilo" value={params.diameter} name="diameter" min={1} max={8} step={0.5} onChange={handleChange} unit="mm" />
+                        </div>
+
+                        <div className="p-4 bg-[#0f172a]/50 border-t border-slate-800 flex items-center justify-between">
+                            <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer hover:text-white">
+                                <input type="checkbox" checked={params.autoRotate} onChange={handleChange} name="autoRotate" className="accent-orange-500" />
+                                Rotación
+                            </label>
+                            <button onClick={downloadReport} className="bg-orange-600 hover:bg-orange-500 text-white px-3 py-1.5 rounded text-[10px] font-bold uppercase tracking-widest flex items-center gap-2">
+                                <Download size={12} /> Exportar
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* 3D View */}
+                    <div className="flex-1 relative order-1 md:order-2">
+                        <Canvas dpr={[1, 2]} gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping }}>
+                            <Scene calculation={results} params={params} />
+                        </Canvas>
+
+                        {/* Floating Stats */}
+                        <div className="absolute top-4 right-4 flex flex-col items-end gap-2 pointer-events-none">
+                            <div className="glass-panel px-4 py-3 rounded-lg flex flex-col items-end">
+                                <div className="text-[9px] uppercase font-bold text-slate-500 mb-0.5">Hilo Total</div>
+                                <div className="text-2xl font-mono font-bold text-white leading-none">{results.totalLength.toFixed(1)}<span className="text-sm text-slate-500 ml-1">m</span></div>
+                            </div>
+                            <div className={`glass-panel px-4 py-3 rounded-lg flex flex-col items-end border-l-4 ${results.safetyFactor < 1.5 ? 'border-l-red-500 bg-red-950/20' : 'border-l-emerald-500 bg-emerald-950/20'}`}>
+                                <div className="text-[9px] uppercase font-bold text-slate-500 mb-0.5">Factor Seguridad</div>
+                                <div className={`text-xl font-mono font-bold leading-none flex items-center gap-2 ${results.safetyFactor < 1.5 ? 'text-red-400' : 'text-emerald-400'}`}>
+                                    {results.safetyFactor > 50 ? 'OK' : results.safetyFactor.toFixed(1)}
+                                    {results.safetyFactor < 1.5 ? <AlertTriangle size={14} /> : <CheckCircle2 size={14} />}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        const root = createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+
+</html>
