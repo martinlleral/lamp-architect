@@ -22,7 +22,7 @@ Configurador paramétrico 3D de lámparas artesanales con hilo de papel Kraft. P
 
 ## Demo
 
-[https://martinlleral.github.io/lamp-architect](https://martinlleral.github.io/lamp-architect)
+[Ver demo en vivo](https://martinlleral.github.io/lamp-architect)
 
 ## Autor
 
